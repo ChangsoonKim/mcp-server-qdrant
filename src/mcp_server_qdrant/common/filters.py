@@ -9,8 +9,8 @@ from mcp_server_qdrant.settings import METADATA_PATH, FilterableField
 def make_filter(
     filterable_fields: dict[str, FilterableField], values: dict[str, Any]
 ) -> ArbitraryFilter:
-    must_conditions = []
-    must_not_conditions = []
+    must_conditions: list[models.Condition] = []
+    must_not_conditions: list[models.Condition] = []
 
     for raw_field_name, field_value in values.items():
         if raw_field_name not in filterable_fields:

@@ -11,8 +11,16 @@ This repository is an example of how to create a MCP server for [Qdrant](https:/
 
 ## Overview
 
-An official Model Context Protocol server for keeping and retrieving memories in the Qdrant vector search engine.
-It acts as a semantic memory layer on top of the Qdrant database.
+This is a security-hardened fork of the official Model Context Protocol server for
+keeping and retrieving memories in Qdrant. It adds OAuth/OIDC, identity allowlists,
+per-user memory isolation, bounded input validation, structured audit logs, request
+and rate limits, HA OAuth state storage, and Qdrant collection replication settings.
+
+For remote deployment, start with [the secure deployment guide](docs/secure-deployment.md)
+and [the environment template](.env.example). The `uvx mcp-server-qdrant` and Smithery
+commands in the upstream sections below install the published upstream package, not
+this fork; build this repository's Dockerfile or run it with `uv run` to get these
+security features.
 
 ## Components
 
@@ -53,8 +61,20 @@ Configuration is done via environment variables. The only command-line argument 
 | `TOOL_FIND_DESCRIPTION`  | Custom description for the find tool                                | See default in [`settings.py`](src/mcp_server_qdrant/settings.py) |
 | `QDRANT_SEARCH_LIMIT`    | Maximum number of results to return from search                     | `10`                                                              |
 | `QDRANT_READ_ONLY`       | Enable read-only mode (disables `qdrant-store` tool)                | `false`                                                           |
+| `QDRANT_AUTO_CREATE_COLLECTION` | Allow the application to create a missing collection      | `true`                                                            |
+| `QDRANT_COLLECTION_REPLICATION_FACTOR` | Replicas for a newly created collection          | `1`                                                               |
+| `QDRANT_COLLECTION_WRITE_CONSISTENCY_FACTOR` | Required write acknowledgements                 | `1`                                                               |
+| `AUTH_MODE`              | `none`, `google`, `oidc`, or standards-compliant remote `jwt`       | `none`                                                            |
+| `AUTH_BASE_URL`          | Public HTTPS origin used for OAuth and MCP token audience           | None                                                              |
+| `AUTH_ALLOWED_EMAILS`    | Comma-separated verified-email allowlist                            | None                                                              |
+| `AUTH_ALLOWED_DOMAINS`   | Comma-separated verified-email-domain allowlist                     | None                                                              |
+| `AUTH_ALLOWED_SUBJECTS`  | Comma-separated immutable subject allowlist                         | None                                                              |
+| `AUTH_STATE_REDIS_URL`   | Durable encrypted OAuth state; required for Google/OIDC by default  | None                                                              |
+| `AUTH_ALLOW_LOCAL_STATE` | Explicit single-replica fallback using persistent `FASTMCP_HOME`    | `false`                                                           |
+| `TENANCY_MODE`           | `user` for isolation or explicit `shared` team memory               | `user`                                                            |
+| `AUDIT_LOG_PATH`         | Optional rotating JSONL file; stderr when unset                     | None                                                              |
 
-### FastMCP Environment Variables
+### Server and FastMCP environment variables
 
 Since `mcp-server-qdrant` is based on FastMCP, it also supports all the FastMCP environment variables. The most
 important ones are listed below:
@@ -63,15 +83,16 @@ important ones are listed below:
 |--------------------------------------------|-----------------------------------------------------------------|---------------|
 | `FASTMCP_LOG_LEVEL`                        | Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)       | `INFO`        |
 | `FASTMCP_SERVER_DEBUG`                     | Enable debug mode                                               | `false`       |
-| `FASTMCP_SERVER_HOST`                      | Host address to bind the server to                              | `127.0.0.1`   |
-| `FASTMCP_SERVER_PORT`                      | Port to run the server on                                       | `8000`        |
+| `SERVER_HOST`                              | Host address to bind the server to                              | `127.0.0.1`   |
+| `SERVER_PORT`                              | Port to run the server on                                       | `8000`        |
+| `SERVER_PATH`                              | Streamable HTTP MCP path                                        | `/mcp`        |
 | `FASTMCP_SERVER_ON_DUPLICATE_RESOURCES`    | Behavior for duplicate resources (warn, error, replace, ignore) | `warn`        |
 | `FASTMCP_SERVER_ON_DUPLICATE_TOOLS`        | Behavior for duplicate tools (warn, error, replace, ignore)     | `warn`        |
 | `FASTMCP_SERVER_ON_DUPLICATE_PROMPTS`      | Behavior for duplicate prompts (warn, error, replace, ignore)   | `warn`        |
 | `FASTMCP_SERVER_DEPENDENCIES`              | List of dependencies to install in the server environment       | `[]`          |
 
-> [!NOTE]
-> Server-specific settings use the `FASTMCP_SERVER_` prefix. This may change in future versions.
+See the secure deployment guide for the complete authentication, validation, audit,
+HTTP, and HA setting reference.
 
 ## Installation
 
@@ -93,25 +114,28 @@ The server supports different transport protocols that can be specified using th
 ```shell
 QDRANT_URL="http://localhost:6333" \
 COLLECTION_NAME="my-collection" \
-uvx mcp-server-qdrant --transport sse
+ALLOW_INSECURE_HTTP=true \
+SERVER_HOST="127.0.0.1" \
+uv run mcp-server-qdrant --transport streamable-http
 ```
 
 Supported transport protocols:
 
 - `stdio` (default): Standard input/output transport, might only be used by local MCP clients
-- `sse`: Server-Sent Events transport, perfect for remote clients
-- `streamable-http`: Streamable HTTP transport, perfect for remote clients, more recent than SSE
+- `streamable-http`: Remote transport at `/mcp`; OAuth is required unless local development explicitly opts out
+- `sse`: Disabled in this fork because it bypasses the hardened Host/Origin path
 
 The default transport is `stdio` if not specified.
 
-When SSE transport is used, the server will listen on the specified port and wait for incoming connections. The default
-port is 8000, however it can be changed using the `FASTMCP_SERVER_PORT` environment variable.
+For a local-only unauthenticated Streamable HTTP test:
 
 ```shell
 QDRANT_URL="http://localhost:6333" \
 COLLECTION_NAME="my-collection" \
-FASTMCP_SERVER_PORT=1234 \
-uvx mcp-server-qdrant --transport sse
+ALLOW_INSECURE_HTTP=true \
+SERVER_HOST=127.0.0.1 \
+SERVER_PORT=1234 \
+uv run mcp-server-qdrant --transport streamable-http
 ```
 
 ### Using Docker
@@ -122,18 +146,14 @@ A Dockerfile is available for building and running the MCP server:
 # Build the container
 docker build -t mcp-server-qdrant .
 
-# Run the container
-docker run -p 8000:8000 \
-  -e FASTMCP_SERVER_HOST="0.0.0.0" \
-  -e QDRANT_URL="http://your-qdrant-server:6333" \
-  -e QDRANT_API_KEY="your-api-key" \
-  -e COLLECTION_NAME="your-collection" \
-  mcp-server-qdrant
+# Run with secrets injected by your runtime. The complete required variables are
+# documented in .env.example; do not commit a populated env file.
+docker run --read-only --tmpfs /tmp --mount type=volume,dst=/var/lib/mcp \
+  -p 8000:8000 --env-file /secure/path/mcp-qdrant.env mcp-server-qdrant
 ```
 
-> [!TIP]
-> Please note that we set `FASTMCP_SERVER_HOST="0.0.0.0"` to make the server listen on all network interfaces. This is
-> necessary when running the server in a Docker container.
+The image runs as UID/GID 10001 and contains the locked local source and preloaded CPU
+embedding model. `AUTH_MODE=none` fails closed for remote transport.
 
 ### Installing via Smithery
 
@@ -207,21 +227,20 @@ TOOL_FIND_DESCRIPTION="Search for relevant code snippets based on natural langua
 The 'query' parameter should describe what you're looking for, \
 and the tool will return the most relevant code snippets. \
 Use this when you need to find existing code snippets for reuse or reference." \
-uvx mcp-server-qdrant --transport sse # Enable SSE transport
+ALLOW_INSECURE_HTTP=true SERVER_HOST=127.0.0.1 \
+uv run mcp-server-qdrant --transport streamable-http
 ```
 
-In Cursor/Windsurf, you can then configure the MCP server in your settings by pointing to this running server using
-SSE transport protocol. The description on how to add an MCP server to Cursor can be found in the [Cursor
+In Cursor/Windsurf, configure the MCP server with Streamable HTTP. The description on how to add an MCP server to Cursor can be found in the [Cursor
 documentation](https://docs.cursor.com/context/model-context-protocol#adding-an-mcp-server-to-cursor). If you are
 running Cursor/Windsurf locally, you can use the following URL:
 
 ```
-http://localhost:8000/sse
+http://localhost:8000/mcp
 ```
 
-> [!TIP]
-> We suggest SSE transport as a preferred way to connect Cursor/Windsurf to the MCP server, as it can support remote
-> connections. That makes it easy to share the server with your team or use it in a cloud environment.
+For any non-loopback deployment, use the OAuth configuration in the secure deployment
+guide and an HTTPS URL.
 
 This configuration transforms the Qdrant MCP server into a specialized code search tool that can:
 
