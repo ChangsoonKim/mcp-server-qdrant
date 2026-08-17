@@ -1,6 +1,7 @@
 import inspect
+from collections.abc import Callable
 from functools import wraps
-from typing import Annotated, Callable, Optional
+from typing import Annotated
 
 from pydantic import Field
 
@@ -75,7 +76,7 @@ def wrap_filters(
             required_new_params.append(parameter)
         else:
             annotation = Annotated[  # type: ignore
-                Optional[field_type], Field(description=field.description)
+                field_type | None, Field(description=field.description)
             ]
             parameter = inspect.Parameter(
                 name=field_name,
@@ -116,7 +117,7 @@ if __name__ == "__main__":
         collection_name: Annotated[
             str, Field(description="The collection to search in")
         ],
-        query_filter: Optional[models.Filter] = None,
+        query_filter: models.Filter | None = None,
     ) -> list[str]:
         print("query", query)
         print("collection_name", collection_name)

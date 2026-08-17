@@ -12,9 +12,9 @@ class FastEmbedProvider(EmbeddingProvider):
     :param model_name: The name of the FastEmbed model to use.
     """
 
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str, cache_dir: str | None = None):
         self.model_name = model_name
-        self.embedding_model = TextEmbedding(model_name)
+        self.embedding_model = TextEmbedding(model_name, cache_dir=cache_dir)
 
     async def embed_documents(self, documents: list[str]) -> list[list[float]]:
         """Embed a list of documents into vectors."""
@@ -47,4 +47,8 @@ class FastEmbedProvider(EmbeddingProvider):
         model_description: DenseModelDescription = (
             self.embedding_model._get_model_description(self.model_name)
         )
+        if model_description.dim is None:
+            raise ValueError(
+                f"Embedding model {self.model_name!r} has no vector dimension"
+            )
         return model_description.dim

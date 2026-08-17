@@ -42,6 +42,10 @@ class QdrantConnector:
         embedding_provider: EmbeddingProvider,
         qdrant_local_path: str | None = None,
         field_indexes: dict[str, models.PayloadSchemaType] | None = None,
+        auto_create_collection: bool = True,
+        shard_number: int = 1,
+        replication_factor: int = 1,
+        write_consistency_factor: int = 1,
     ):
         self._qdrant_url = qdrant_url.rstrip("/") if qdrant_url else None
         self._qdrant_api_key = qdrant_api_key
@@ -51,6 +55,10 @@ class QdrantConnector:
             location=qdrant_url, api_key=qdrant_api_key, path=qdrant_local_path
         )
         self._field_indexes = field_indexes
+        self._auto_create_collection = auto_create_collection
+        self._shard_number = shard_number
+        self._replication_factor = replication_factor
+        self._write_consistency_factor = write_consistency_factor
 
     async def get_collection_names(self) -> list[str]:
         """
@@ -60,7 +68,7 @@ class QdrantConnector:
         response = await self._client.get_collections()
         return [collection.name for collection in response.collections]
 
-    async def store(self, entry: Entry, *, collection_name: str | None = None):
+    async def store(self, entry: Entry, *, collection_name: str | None = None) -> str:
         """
         Store some information in the Qdrant collection, along with the specified metadata.
         :param entry: The entry to store in the Qdrant collection.
@@ -79,16 +87,18 @@ class QdrantConnector:
         # Add to Qdrant
         vector_name = self._embedding_provider.get_vector_name()
         payload = {"document": entry.content, METADATA_PATH: entry.metadata}
+        point_id = uuid.uuid4().hex
         await self._client.upsert(
             collection_name=collection_name,
             points=[
                 models.PointStruct(
-                    id=uuid.uuid4().hex,
+                    id=point_id,
                     vector={vector_name: embeddings[0]},
                     payload=payload,
                 )
             ],
         )
+        return point_id
 
     async def search(
         self,
@@ -109,6 +119,8 @@ class QdrantConnector:
         :return: A list of entries found.
         """
         collection_name = collection_name or self._default_collection_name
+        if collection_name is None:
+            raise ValueError("A collection name is required")
         collection_exists = await self._client.collection_exists(collection_name)
         if not collection_exists:
             return []
@@ -129,13 +141,23 @@ class QdrantConnector:
             query_filter=query_filter,
         )
 
-        return [
-            Entry(
-                content=result.payload["document"],
-                metadata=result.payload.get("metadata"),
+        entries: list[Entry] = []
+        for result in search_results.points:
+            payload = result.payload or {}
+            document = payload.get("document")
+            if not isinstance(document, str):
+                logger.warning(
+                    "Skipping Qdrant point %s without a text document", result.id
+                )
+                continue
+            metadata = payload.get("metadata")
+            entries.append(
+                Entry(
+                    content=document,
+                    metadata=metadata if isinstance(metadata, dict) else None,
+                )
             )
-            for result in search_results.points
-        ]
+        return entries
 
     async def _ensure_collection_exists(self, collection_name: str):
         """
@@ -144,20 +166,32 @@ class QdrantConnector:
         """
         collection_exists = await self._client.collection_exists(collection_name)
         if not collection_exists:
+            if not self._auto_create_collection:
+                raise ValueError(
+                    f"Collection {collection_name!r} does not exist and automatic creation is disabled"
+                )
             # Create the collection with the appropriate vector size
             vector_size = self._embedding_provider.get_vector_size()
 
             # Use the vector name as defined in the embedding provider
             vector_name = self._embedding_provider.get_vector_name()
-            await self._client.create_collection(
-                collection_name=collection_name,
-                vectors_config={
-                    vector_name: models.VectorParams(
-                        size=vector_size,
-                        distance=models.Distance.COSINE,
-                    )
-                },
-            )
+            try:
+                await self._client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config={
+                        vector_name: models.VectorParams(
+                            size=vector_size,
+                            distance=models.Distance.COSINE,
+                        )
+                    },
+                    shard_number=self._shard_number,
+                    replication_factor=self._replication_factor,
+                    write_consistency_factor=self._write_consistency_factor,
+                )
+            except Exception:
+                # Two stateless MCP replicas can race while creating the first collection.
+                if not await self._client.collection_exists(collection_name):
+                    raise
 
             # Create payload indexes if configured
 

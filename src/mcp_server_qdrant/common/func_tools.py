@@ -1,6 +1,6 @@
 import inspect
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable
 
 
 def make_partial_function(original_func: Callable, fixed_values: dict) -> Callable:
