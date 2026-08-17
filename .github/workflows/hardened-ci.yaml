@@ -1,0 +1,106 @@
+name: Hardened CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardened-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality and type safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install locked dependencies
+        run: |
+          python -m pip install uv==0.9.17
+          uv sync --frozen
+
+      - name: Run lint and type checks
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy src
+          uv run pyright src
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install locked dependencies
+        run: |
+          python -m pip install uv==0.9.17
+          uv sync --frozen
+
+      - name: Audit installed dependencies
+        run: uv run --with pip-audit==2.9.0 pip-audit
+
+  container-smoke:
+    name: Hardened container smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build production image
+        run: docker build --tag mcp-server-qdrant:ci .
+
+      - name: Verify configured runtime user
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' mcp-server-qdrant:ci)" = "10001:10001"
+
+      - name: Verify unauthenticated remote mode fails closed
+        run: |
+          if docker run --rm \
+            --env QDRANT_URL=:memory: \
+            --env COLLECTION_NAME=ci \
+            mcp-server-qdrant:ci; then
+            echo "Unauthenticated streamable HTTP unexpectedly started"
+            exit 1
+          fi
+
+      - name: Start explicit local-development mode
+        run: |
+          docker run --detach --name mcp-server-qdrant-ci \
+            --publish 8000:8000 \
+            --env QDRANT_URL=:memory: \
+            --env COLLECTION_NAME=ci \
+            --env ALLOW_INSECURE_HTTP=true \
+            mcp-server-qdrant:ci
+
+      - name: Verify non-root process and health endpoint
+        run: |
+          trap 'docker logs mcp-server-qdrant-ci; docker rm --force mcp-server-qdrant-ci' EXIT
+          test "$(docker exec mcp-server-qdrant-ci id -u)" = "10001"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Container did not become healthy"
+          exit 1

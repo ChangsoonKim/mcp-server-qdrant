@@ -110,7 +110,7 @@ def _walk_json(
 ) -> None:
     if depth > settings.max_metadata_depth:
         raise InputRejectedError("JSON input exceeds the nesting depth limit")
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, str | bool | int):
         if isinstance(value, str):
             _validate_unicode(value, "JSON string")
             if settings.reject_secrets and _contains_secret(value):
@@ -137,7 +137,7 @@ def _walk_json(
                 reject_sensitive_keys=reject_sensitive_keys,
             )
         return
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         for child in value:
             _walk_json(
                 child,
