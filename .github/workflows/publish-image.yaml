@@ -43,12 +43,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to GHCR with retry
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if printf '%s' "$GHCR_TOKEN" \
+              | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin; then
+              exit 0
+            fi
+            if [[ "$attempt" == "5" ]]; then
+              echo "GHCR login failed after $attempt attempts"
+              exit 1
+            fi
+            delay=$((attempt * 5))
+            echo "GHCR login attempt $attempt failed; retrying in ${delay}s"
+            sleep "$delay"
+          done
 
       - name: Generate image metadata
         id: metadata
