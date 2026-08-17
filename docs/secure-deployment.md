@@ -202,6 +202,24 @@ necessary: replication is availability, not backup.
 
 ## Container and ingress
 
+### Published image
+
+After a change reaches `master` and Hardened CI passes, GitHub Actions publishes
+the reviewed image to:
+
+```text
+ghcr.io/changsoonkim/mcp-server-qdrant
+```
+
+Each build receives an immutable `sha-<full-git-sha>` tag plus convenience
+`main` and `latest` tags. Production manifests must use the immutable SHA tag or
+the published OCI digest. The workflow also attaches an SBOM, build provenance,
+and a GitHub artifact attestation. The first package version must be confirmed as
+Public in GitHub Packages so Kubernetes can pull it anonymously.
+
+Do not pass OAuth, Qdrant, or Redis credentials as Docker build arguments. They
+belong only in runtime Kubernetes Secrets or an equivalent secret manager.
+
 The Docker image installs the locked local source, preloads the CPU embedding model,
 and runs as UID/GID 10001. The remote command fails closed if `AUTH_MODE=none`; only
 explicit local development may set `ALLOW_INSECURE_HTTP=true`. SSE is disabled; use

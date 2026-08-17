@@ -69,6 +69,16 @@ jobs:
       - name: Build production image
         run: docker build --tag mcp-server-qdrant:ci .
 
+      - name: Scan production image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: mcp-server-qdrant:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
       - name: Verify configured runtime user
         run: |
           test "$(docker image inspect --format '{{.Config.User}}' mcp-server-qdrant:ci)" = "10001:10001"
